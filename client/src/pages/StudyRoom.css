@@ -1,0 +1,217 @@
+﻿.room-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #1e1e1e;
+}
+
+.room-header {
+  background: rgba(30, 30, 30, 0.85);
+  backdrop-filter: blur(10px);
+  padding: 1rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #444;
+}
+
+.header-brand h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  color: #fff;
+  display: inline-block;
+  margin-right: 1rem;
+}
+
+.room-title {
+  color: #aaa;
+  font-size: 1rem;
+  border-left: 1px solid #555;
+  padding-left: 1rem;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.btn-leave {
+  background-color: transparent;
+  color: #ff5252;
+  border: 1px solid #ff5252;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-leave:hover {
+  background-color: #ff5252;
+  color: #fff;
+}
+
+.distributed-subtext {
+  font-size: 0.75rem;
+  color: #888;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+.highlight-node {
+  color: #4caf50;
+  font-weight: bold;
+}
+
+.room-grid {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.participants-panel,
+.resources-panel {
+  width: 250px;
+  background: #252525;
+  padding: 1rem;
+  border-right: 1px solid #444;
+  overflow-y: auto;
+}
+
+.resources-panel {
+  border-right: none;
+  border-left: 1px solid #444;
+}
+
+.chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a1a;
+}
+
+.chat-messages {
+  flex: 1;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.message {
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  background: #2a2a2a;
+}
+
+.message.system {
+  background: transparent;
+  color: #888;
+  text-align: center;
+}
+
+.msg-time {
+  float: right;
+  color: #666;
+  font-size: 0.8rem;
+}
+
+.chat-input {
+  display: flex;
+  padding: 1rem;
+  background: #252525;
+  border-top: 1px solid #444;
+}
+
+.chat-input input {
+  flex: 1;
+  margin-right: 1rem;
+}
+
+.webrtc section {
+  margin-top: 1rem;
+  border-top: 1px solid #444;
+  padding-top: 1rem;
+}
+
+.webrtc-active-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.videos {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.video-container {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.local-video,
+.remote-video {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+  display: block;
+}
+
+.video-label {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.media-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.btn-control {
+  flex: 1;
+  min-width: 80px;
+  padding: 0.5rem;
+  background: #444;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.btn-control:hover {
+  background: #555;
+}
+
+.btn-control.active {
+  background: #4caf50;
+}
+
+.btn-control.disabled {
+  background: #d32f2f;
+}
+
+.btn-danger {
+  width: 100%;
+  padding: 0.5rem;
+  background: #d32f2f;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+
+.btn-danger:hover {
+  background: #b71c1c;
+}

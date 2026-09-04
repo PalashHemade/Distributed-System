@@ -1,0 +1,30 @@
+{
+  "name": "distributed-study-room",
+  "version": "1.0.0",
+  "description": "Distributed Collaborative Study Room — MERN Stack",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "npm run install:client && npm run install:server",
+    "install:client": "cd client && npm install",
+    "install:server": "cd server && npm install",
+    "dev": "concurrently \"npm run gateway\" \"npm run node:a\" \"npm run node:b\" \"npm run node:c\" \"npm run client\"",
+    "gateway": "cd server && node gateway/server.js",
+    "node:a": "cd server && cross-env NODE_ID=node-A NODE_PORT=5001 node nodes/nodeA/server.js",
+    "node:b": "cd server && cross-env NODE_ID=node-B NODE_PORT=5002 node nodes/nodeB/server.js",
+    "node:c": "cd server && cross-env NODE_ID=node-C NODE_PORT=5003 node nodes/nodeC/server.js",
+    "client": "cd client && npm run dev"
+  },
+  "keywords": [
+    "distributed",
+    "system",
+    "mern",
+    "study",
+    "room"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3"
+  }
+}
