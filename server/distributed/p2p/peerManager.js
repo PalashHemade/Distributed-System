@@ -38,11 +38,44 @@ class PeerManager {
     }
   }
 
-  handleIncoming(req, res) {
-    const { senderNode, data } = req.body;
-    console.log(`[P2P] ${this.node.nodeId} received P2P data from ${senderNode}`);
+  async handleIncoming(req, res) {
+    const { senderNodeId, message } = req.body;
+    console.log(`[P2P] ${this.node.nodeId} received P2P message from ${senderNodeId}: ${message.type}`);
     
-    // Process data depending on logic later
+    if (message.type === 'RESOURCE_SHARED') {
+       const resourceData = message.payload;
+       
+       // Attempt to replicate the file from the sender
+       const senderPeer = this.node.peers.find(p => p.nodeId === senderNodeId);
+       if (senderPeer) {
+         try {
+           const fs = require('fs');
+           const path = require('path');
+           
+           // The URL to download from the original node
+           const url = `http://${senderPeer.host}:${senderPeer.port}/uploads/${senderNodeId}/${resourceData.fileName}`;
+           const response = await require('axios').get(url, { responseType: 'stream' });
+           
+           // Ensure local upload directory exists
+           const dir = path.resolve(__dirname, `../../../../uploads/${this.node.nodeId}`);
+           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+           
+           const destPath = path.join(dir, resourceData.fileName);
+           const writer = fs.createWriteStream(destPath);
+           response.data.pipe(writer);
+           
+           await new Promise((resolve, reject) => {
+             writer.on('finish', resolve);
+             writer.on('error', reject);
+           });
+           
+           console.log(`[REPLICATION] Node ${this.node.nodeId} successfully replicated ${resourceData.fileName}`);
+         } catch (error) {
+           console.error(`[REPLICATION ERROR] Failed to replicate from ${senderNodeId}:`, error.message);
+         }
+       }
+    }
+    
     res.status(200).json({ success: true, receivedAt: Date.now() });
   }
 }

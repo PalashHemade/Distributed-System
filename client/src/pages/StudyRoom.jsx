@@ -8,10 +8,12 @@ function StudyRoom() {
   const { roomId } = useParams();
   const [searchParams] = useSearchParams();
   const userName = searchParams.get('user');
-  const nodeId = searchParams.get('node');
-  const nodePort = searchParams.get('port');
+  const [nodeId, setNodeId] = useState(searchParams.get('node'));
+  const [nodePort, setNodePort] = useState(searchParams.get('port'));
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [participants, setParticipants] = useState([]);
   const [inputMsg, setInputMsg] = useState('');
@@ -44,9 +46,39 @@ function StudyRoom() {
       .catch(err => console.log('Failed to fetch chat history', err));
       
     const newSocket = io(`http://localhost:${nodePort}`);
+    socketRef.current = newSocket;
+    setSocket(newSocket);
     
     newSocket.on('connect', () => {
       newSocket.emit('join_room', { roomId, user: { name: userName } });
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      if (reason === 'io client disconnect') return; // Intentional disconnect (e.g., cleanup)
+      
+      console.log(`[Socket] Disconnected from node ${nodeId}. Initiating failover...`);
+      setIsReconnecting(true);
+      
+      const gatewayUrl = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5000';
+      axios.get(`${gatewayUrl}/health`)
+        .then(res => {
+          const activeNodes = res.data.nodes.filter(n => n.status === 'ONLINE' && n.nodeId !== nodeId);
+          if (activeNodes.length > 0) {
+            const nextNode = activeNodes[Math.floor(Math.random() * activeNodes.length)];
+            setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `Lost connection to ${nodeId}. Failing over to ${nextNode.nodeId}...` } }]);
+            
+            // This state change triggers the useEffect to re-run and connect to the new node
+            setNodeId(nextNode.nodeId);
+            setNodePort(nextNode.port);
+            setIsReconnecting(false);
+          } else {
+            setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `Connection lost. No backup nodes available.` } }]);
+          }
+        })
+        .catch(err => {
+          console.error('[Failover] Failed to contact gateway', err);
+          setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `Connection lost. Gateway unreachable for failover.` } }]);
+        });
     });
 
     newSocket.on('chat_message', (envelope) => {
@@ -73,7 +105,8 @@ function StudyRoom() {
     // WebRTC Signaling Handlers
     newSocket.on('webrtc_offer', async (data) => {
       if (!peerConnection.current) {
-        await startWebRTC(false);
+        const started = await startWebRTC(false);
+        if (!started) return;
       }
       try {
         await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
@@ -106,7 +139,10 @@ function StudyRoom() {
     });
 
     setSocket(newSocket);
-    return () => newSocket.close();
+    return () => {
+      newSocket.close();
+      socketRef.current = null;
+    };
   }, [roomId, userName, nodeId, nodePort]);
 
   const sendMessage = (e) => {
@@ -172,8 +208,8 @@ function StudyRoom() {
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       pc.onicecandidate = (event) => {
-        if (event.candidate && socket) {
-          socket.emit('webrtc_ice', { roomId, candidate: event.candidate });
+        if (event.candidate && socketRef.current) {
+          socketRef.current.emit('webrtc_ice', { roomId, candidate: event.candidate });
         }
       };
 
@@ -181,14 +217,17 @@ function StudyRoom() {
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
       };
 
-      if (isCaller && socket) {
+      if (isCaller && socketRef.current) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        socket.emit('webrtc_offer', { roomId, offer });
+        socketRef.current.emit('webrtc_offer', { roomId, offer });
       }
+      
+      return true;
     } catch (err) {
       console.error('Error starting WebRTC:', err);
       alert('Could not access camera/microphone.');
+      return false;
     }
   };
 
@@ -284,7 +323,11 @@ function StudyRoom() {
         </div>
         <div className="header-controls">
           <div className="connection-info">
-            Connected via: <span className="highlight-node">{nodeId}</span>
+            {isReconnecting ? (
+              <span style={{ color: 'orange' }}>Reconnecting...</span>
+            ) : (
+              <>Connected via: <span className="highlight-node">{nodeId}</span></>
+            )}
           </div>
           <button className="btn-leave" onClick={handleLeaveRoom}>Leave Room</button>
         </div>
