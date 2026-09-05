@@ -34,6 +34,8 @@ class BaseNode {
     this.peers = [];
     this.users = 0;
     this.resources = 0;
+    this.chatHistory = new Map(); // roomId -> Array of messages
+    this.resourceHistory = new Map(); // roomId -> Array of resources
 
     // Distributed Components
     this.rpcServer = new RpcServer(this);
@@ -122,6 +124,10 @@ class BaseNode {
         try { await new Resource(resourceData).save(); } catch(e) {}
       }
 
+      // Save to memory
+      if (!this.resourceHistory.has(req.body.roomId)) this.resourceHistory.set(req.body.roomId, []);
+      this.resourceHistory.get(req.body.roomId).push(resourceData);
+
       // Notify other nodes directly via P2P (Part 17 requirement)
       for (const peer of this.peers) {
         try {
@@ -147,7 +153,11 @@ class BaseNode {
         const resources = await Resource.find({ roomId: req.params.roomId });
         return res.status(200).json(resources);
       }
-      res.status(200).json([]);
+      res.status(200).json(this.resourceHistory.get(req.params.roomId) || []);
+    });
+
+    this.app.get('/api/chat/room/:roomId', (req, res) => {
+      res.status(200).json(this.chatHistory.get(req.params.roomId) || []);
     });
 
     // Register RPC Methods

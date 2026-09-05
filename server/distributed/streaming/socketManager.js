@@ -83,6 +83,10 @@ class SocketManager {
           } catch(err) { console.error('Failed to save message', err); }
         }
         
+        // Save to memory
+        if (!this.node.chatHistory.has(roomId)) this.node.chatHistory.set(roomId, []);
+        this.node.chatHistory.get(roomId).push(envelope);
+        
         // Broadcast locally to this room
         socket.to(roomId).emit('chat_message', envelope);
         
@@ -121,7 +125,10 @@ class SocketManager {
 
     this.node.messageBus.subscribe('CHAT_MESSAGE', (msg) => {
       if (msg.senderNode !== this.node.nodeId) {
-        this.io.to(msg.payload.roomId).emit('chat_message', msg.payload.message);
+        if (!this.node.chatHistory.has(msg.payload.roomId)) this.node.chatHistory.set(msg.payload.roomId, []);
+        this.node.chatHistory.get(msg.payload.roomId).push(msg.payload);
+        
+        this.io.to(msg.payload.roomId).emit('chat_message', msg.payload);
       }
     });
 
@@ -132,6 +139,9 @@ class SocketManager {
     });
 
     this.node.messageBus.subscribe('RESOURCE_SHARED', (msg) => {
+      if (!this.node.resourceHistory.has(msg.payload.roomId)) this.node.resourceHistory.set(msg.payload.roomId, []);
+      this.node.resourceHistory.get(msg.payload.roomId).push(msg.payload);
+      
       // Local emit if it came from another node (or even if same node, to update UI)
       this.io.to(msg.payload.roomId).emit('resource_shared', msg.payload);
     });

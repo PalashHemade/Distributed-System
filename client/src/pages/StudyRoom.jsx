@@ -33,10 +33,15 @@ function StudyRoom() {
   useEffect(() => {
     if (!nodePort) return;
     
-    // Fetch initial resources from local node DB
+    // Fetch initial resources from local node DB (or memory)
     axios.get(`http://localhost:${nodePort}/api/resources/room/${roomId}`)
       .then(res => setResources(res.data))
       .catch(err => console.log('Failed to fetch resources', err));
+      
+    // Fetch initial chat history from local node memory
+    axios.get(`http://localhost:${nodePort}/api/chat/room/${roomId}`)
+      .then(res => setMessages(res.data))
+      .catch(err => console.log('Failed to fetch chat history', err));
       
     const newSocket = io(`http://localhost:${nodePort}`);
     
@@ -45,15 +50,18 @@ function StudyRoom() {
     });
 
     newSocket.on('chat_message', (envelope) => {
+      if (!envelope) return;
       setMessages(prev => [...prev, envelope]);
     });
     
     newSocket.on('user_joined', (user) => {
+      if (!user) return;
       setParticipants(prev => [...prev, { ...user, status: 'Online' }]);
       setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `${user.name} joined from ${user.nodeId}` } }]);
     });
 
     newSocket.on('user_left', (user) => {
+      if (!user) return;
       setParticipants(prev => prev.filter(p => p.socketId !== user.socketId));
       setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `${user.name} left` } }]);
     });
@@ -324,7 +332,7 @@ function StudyRoom() {
 
         <main className="chat-panel">
           <div className="chat-messages">
-            {messages.map((m, idx) => (
+            {messages.filter(m => m != null).map((m, idx) => (
               <div key={idx} className={`message ${m.type === 'SYSTEM' ? 'system' : ''}`}>
                 {m.type === 'SYSTEM' ? <em>{m.payload.text}</em> : <><br/><strong>{m.senderUser}: </strong><span>{m.payload.text}</span><span className="msg-time">{new Date(m.timestamp).toLocaleTimeString()}</span></>}
               </div>
