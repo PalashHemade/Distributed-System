@@ -94,6 +94,34 @@ class BaseNode {
     // P2P Endpoint
     this.app.post('/api/p2p/receive', (req, res) => this.peerManager.handleIncoming(req, res));
 
+    // Gossip Endpoint for Decentralized Registry
+    this.app.post('/api/p2p/gossip', (req, res) => {
+      const { senderNode, peers } = req.body;
+      let changed = false;
+      
+      // Add sender if not known
+      if (senderNode && !this.peers.find(p => p.nodeId === senderNode.nodeId)) {
+        this.peers.push(senderNode);
+        changed = true;
+      }
+      
+      // Merge other peers
+      if (Array.isArray(peers)) {
+        for (const p of peers) {
+          if (p.nodeId !== this.nodeId && !this.peers.find(existing => existing.nodeId === p.nodeId)) {
+            this.peers.push(p);
+            changed = true;
+          }
+        }
+      }
+      
+      if (changed) {
+        console.log(`[${this.nodeId}] Updated peers via GOSSIP protocol:`, this.peers.map(p => p.nodeId).join(', '));
+      }
+      
+      res.status(200).json({ success: true, peers: this.peers });
+    });
+
     // File Upload (Multer)
     const multer = require('multer');
     const fs = require('fs');
@@ -242,11 +270,34 @@ class BaseNode {
     }
   }
 
+  startGossip() {
+    setInterval(() => {
+      if (this.peers.length > 0) {
+        // Pick a random peer to gossip with
+        const peer = this.peers[Math.floor(Math.random() * this.peers.length)];
+        axios.post(`http://${peer.host}:${peer.port}/api/p2p/gossip`, {
+          senderNode: { nodeId: this.nodeId, host: 'localhost', port: this.port },
+          peers: this.peers
+        }).catch(() => {});
+      } else {
+        // If we have no peers (e.g., Gateway is completely down), try pinging default known ports
+        const fallbackPorts = [5001, 5002, 5003].filter(p => p !== this.port);
+        for (const port of fallbackPorts) {
+          axios.post(`http://localhost:${port}/api/p2p/gossip`, {
+            senderNode: { nodeId: this.nodeId, host: 'localhost', port: this.port },
+            peers: this.peers
+          }).catch(() => {});
+        }
+      }
+    }, 10000); // Gossip every 10 seconds
+  }
+
   start() {
     this.socketManager.initialize();
     this.server.listen(this.port, () => {
       console.log(`[${this.nodeId}] Node server running on port ${this.port}`);
       this.registerWithGateway();
+      this.startGossip();
     });
   }
 }
