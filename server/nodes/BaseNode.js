@@ -135,6 +135,9 @@ class BaseNode {
       // We still use Message Bus for the client UI update
       this.messageBus.publish('RESOURCE_SHARED', resourceData);
       
+      // Local Broadcast
+      this.socketManager.io.to(resourceData.roomId).emit('resource_shared', resourceData);
+      
       res.status(200).json({ success: true, resource: resourceData });
     });
 
@@ -203,6 +206,17 @@ class BaseNode {
         port: this.port
       });
       console.log(`[${this.nodeId}] Registered with Gateway successfully.`);
+      
+      // Start heartbeat
+      if (!this.heartbeatInterval) {
+        this.heartbeatInterval = setInterval(() => {
+          axios.post(`${this.gatewayUrl}/api/registry/heartbeat`, {
+            nodeId: this.nodeId,
+            users: this.users,
+            resources: this.resources
+          }).catch(() => {});
+        }, 5000);
+      }
     } catch (error) {
       console.error(`[${this.nodeId}] Failed to register with Gateway:`, error.message);
       // Retry after some time

@@ -107,6 +107,20 @@ app.post('/api/registry/register', async (req, res) => {
   res.status(200).json({ success: true });
 });
 
+app.post('/api/registry/heartbeat', (req, res) => {
+  const { nodeId, users, resources } = req.body;
+  const node = registeredNodes.get(nodeId);
+  if (node) {
+    node.lastSeen = Date.now();
+    node.status = 'ONLINE';
+    if (users !== undefined) node.users = users;
+    if (resources !== undefined) node.resources = resources;
+    // Broadcast to update dashboard with latest stats
+    broadcastNodeStatus();
+  }
+  res.status(200).json({ success: true });
+});
+
 // Also require axios at the top
 const axios = require('axios');
 

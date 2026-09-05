@@ -1,4 +1,5 @@
 const socketIo = require('socket.io');
+const mongoose = require('mongoose');
 
 class SocketManager {
   constructor(node) {
@@ -23,10 +24,15 @@ class SocketManager {
         socket.join(roomId);
         console.log(`[SOCKET] User ${user.name} joined room ${roomId}`);
         
+        const userObj = { ...user, socketId: socket.id, nodeId: this.node.nodeId };
+
+        // Local Broadcast
+        socket.to(roomId).emit('user_joined', userObj);
+
         // Propagate to other nodes via Message Bus
         this.node.messageBus.publish('USER_JOINED', {
           roomId,
-          user: { ...user, socketId: socket.id, nodeId: this.node.nodeId }
+          user: userObj
         });
       });
 
@@ -35,10 +41,15 @@ class SocketManager {
         socket.leave(roomId);
         console.log(`[SOCKET] User ${user.name} left room ${roomId}`);
         
+        const userObj = { ...user, socketId: socket.id, nodeId: this.node.nodeId };
+
+        // Local Broadcast
+        socket.to(roomId).emit('user_left', userObj);
+
         // Propagate to other nodes via Message Bus
         this.node.messageBus.publish('USER_LEFT', {
           roomId,
-          user: { ...user, socketId: socket.id, nodeId: this.node.nodeId }
+          user: userObj
         });
       });
 
