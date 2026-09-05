@@ -5,6 +5,14 @@ const dotenv = require('dotenv');
 const path = require('path');
 const mongoose = require('mongoose');
 
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL ERROR] Gateway Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRITICAL ERROR] Gateway Unhandled Rejection:', reason);
+});
+
 // Load env vars
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 

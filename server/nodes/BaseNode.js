@@ -12,6 +12,14 @@ const PeerManager = require('../distributed/p2p/peerManager');
 const SocketManager = require('../distributed/streaming/socketManager');
 const mongoose = require('mongoose');
 
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL ERROR] Node Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRITICAL ERROR] Node Unhandled Rejection:', reason);
+});
+
 // Load env vars
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
