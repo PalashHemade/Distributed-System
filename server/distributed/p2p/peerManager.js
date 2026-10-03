@@ -41,41 +41,15 @@ class PeerManager {
   async handleIncoming(req, res) {
     const { senderNodeId, message } = req.body;
     console.log(`[P2P] ${this.node.nodeId} received P2P message from ${senderNodeId}: ${message.type}`);
-    
+
     if (message.type === 'RESOURCE_SHARED') {
-       const resourceData = message.payload;
-       
-       // Attempt to replicate the file from the sender
-       const senderPeer = this.node.peers.find(p => p.nodeId === senderNodeId);
-       if (senderPeer) {
-         try {
-           const fs = require('fs');
-           const path = require('path');
-           
-           // The URL to download from the original node
-           const url = `http://${senderPeer.host}:${senderPeer.port}/uploads/${senderNodeId}/${resourceData.fileName}`;
-           const response = await require('axios').get(url, { responseType: 'stream' });
-           
-           // Ensure local upload directory exists
-           const dir = path.resolve(__dirname, `../../../../uploads/${this.node.nodeId}`);
-           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-           
-           const destPath = path.join(dir, resourceData.fileName);
-           const writer = fs.createWriteStream(destPath);
-           response.data.pipe(writer);
-           
-           await new Promise((resolve, reject) => {
-             writer.on('finish', resolve);
-             writer.on('error', reject);
-           });
-           
-           console.log(`[REPLICATION] Node ${this.node.nodeId} successfully replicated ${resourceData.fileName}`);
-         } catch (error) {
-           console.error(`[REPLICATION ERROR] Failed to replicate from ${senderNodeId}:`, error.message);
-         }
-       }
+      // Files live centrally in S3 now (see BaseNode.js upload route) — there is no
+      // local file to copy anymore. This P2P notification is kept purely to
+      // demonstrate the node-to-node channel; the metadata itself also arrives via
+      // the MessageBus broadcast, which is what actually updates resourceHistory/UI.
+      console.log(`[P2P] ${this.node.nodeId} notified of resource "${message.payload.originalName}" from ${senderNodeId} (stored in S3, no local replication needed)`);
     }
-    
+
     res.status(200).json({ success: true, receivedAt: Date.now() });
   }
 }

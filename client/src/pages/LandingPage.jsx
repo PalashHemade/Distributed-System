@@ -1,113 +1,145 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { fetchCurrentUser, logout } from '../auth';
 import './LandingPage.css';
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5000';
 
-function LandingPage() {
-  const [nodes, setNodes] = useState([]);
-  const [userName, setUserName] = useState('');
-  const [roomName, setRoomName] = useState('');
-  const navigate = useNavigate();
+async function pickActiveNode() {
+  const res = await axios.get(`${GATEWAY_URL}/health`);
+  const nodes = (res.data.nodes || []).filter(n => n.status === 'ONLINE');
+  if (nodes.length === 0) throw new Error('No active nodes available');
+  return nodes[Math.floor(Math.random() * nodes.length)];
+}
 
-  useEffect(() => {
-    // Fetch available nodes from gateway health check
-    const fetchNodes = async () => {
-      try {
-        const res = await axios.get(`${GATEWAY_URL}/health`);
-        if (res.data.nodes) {
-          setNodes(res.data.nodes.filter(n => n.status === 'ONLINE'));
-        }
-      } catch (err) {
-        console.error('Failed to fetch nodes from Gateway:', err);
-      }
-    };
-    fetchNodes();
-  }, []);
+function AuthForm({ onAuthed }) {
+  const [mode, setMode] = useState('login'); // 'login' | 'register'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('student');
+  const [error, setError] = useState('');
 
-  const handleCreateRoom = async (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    if (!userName || !roomName) return alert('Please enter name and room name');
-    
-    // In FA-1, we can either call Gateway to create, or pick a node directly.
-    // Let's assume gateway has a route /api/rooms/create to assign a node
-    // Wait, we didn't add /api/rooms/create to Gateway yet, let's just pick a random node from client for simplicity,
-    // OR I will add that route to Gateway next.
-    
-    if (nodes.length === 0) return alert('No active nodes available');
-    
-    const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
-    const roomId = `DS-${Math.floor(100 + Math.random() * 900)}`;
-
-    navigate(`/room/${roomId}?node=${randomNode.nodeId}&user=${userName}&port=${randomNode.port}`);
-  };
-
-  const handleJoinRoom = (e) => {
-    e.preventDefault();
-    if (!userName || !roomName) return alert('Please enter name and room ID (e.g. DS-101)');
-    
-    if (nodes.length === 0) return alert('No active nodes available');
-    
-    // Just pick a random node to connect through (Distributed System feature!)
-    const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
-    
-    navigate(`/room/${roomName}?node=${randomNode.nodeId}&user=${userName}&port=${randomNode.port}`);
+    setError('');
+    try {
+      const path = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const body = mode === 'login' ? { email, password } : { email, password, name, role };
+      const res = await axios.post(`${GATEWAY_URL}${path}`, body);
+      onAuthed(res.data.user);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Something went wrong');
+    }
   };
 
   return (
+    <div className="landing-card">
+      <h1>Distributed Online Classroom</h1>
+      <p className="subtitle">{mode === 'login' ? 'Log in to continue' : 'Create an account'}</p>
+      <form className="join-form" onSubmit={submit}>
+        {mode === 'register' && (
+          <>
+            <input type="text" placeholder="Your Name" value={name} onChange={e => setName(e.target.value)} required />
+            <div style={{ display: 'flex', gap: '1rem', margin: '0.5rem 0' }}>
+              <label><input type="radio" checked={role === 'student'} onChange={() => setRole('student')} /> Student</label>
+              <label><input type="radio" checked={role === 'teacher'} onChange={() => setRole('teacher')} /> Teacher</label>
+            </div>
+          </>
+        )}
+        <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />
+        <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required />
+        {error && <p style={{ color: '#f66' }}>{error}</p>}
+        <button type="submit" className="btn-primary">{mode === 'login' ? 'Log In' : 'Register'}</button>
+      </form>
+      <p className="distributed-subtext">
+        {mode === 'login' ? (
+          <>No account? <a href="#" onClick={(e) => { e.preventDefault(); setMode('register'); }}>Register</a></>
+        ) : (
+          <>Already have an account? <a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>Log in</a></>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function TeacherDashboard({ user, onLogout }) {
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const navigate = useNavigate();
+
+  const createClassroom = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const node = await pickActiveNode();
+      const res = await axios.post(`http://${node.host || 'localhost'}:${node.port}/api/classrooms`, { name });
+      navigate(`/classroom/${res.data.code}`);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    }
+  };
+
+  return (
+    <div className="landing-card">
+      <h1>Teacher Dashboard</h1>
+      <p className="subtitle">Welcome, {user.name}</p>
+      <form className="join-form" onSubmit={createClassroom}>
+        <h3>Create a Classroom</h3>
+        <input type="text" placeholder="Classroom Name" value={name} onChange={e => setName(e.target.value)} required />
+        {error && <p style={{ color: '#f66' }}>{error}</p>}
+        <button type="submit" className="btn-primary">Create Classroom</button>
+      </form>
+      <button className="btn-secondary" style={{ marginTop: '1rem' }} onClick={onLogout}>Log Out</button>
+    </div>
+  );
+}
+
+function StudentDashboard({ user, onLogout }) {
+  const [code, setCode] = useState('');
+  const navigate = useNavigate();
+
+  const joinClassroom = (e) => {
+    e.preventDefault();
+    if (!code) return;
+    navigate(`/classroom/${code.trim()}`);
+  };
+
+  return (
+    <div className="landing-card">
+      <h1>Student Dashboard</h1>
+      <p className="subtitle">Welcome, {user.name}</p>
+      <form className="join-form" onSubmit={joinClassroom}>
+        <h3>Join a Classroom</h3>
+        <input type="text" placeholder="Classroom Code (e.g. DS-482)" value={code} onChange={e => setCode(e.target.value)} required />
+        <button type="submit" className="btn-secondary">Join Classroom</button>
+      </form>
+      <button className="btn-secondary" style={{ marginTop: '1rem' }} onClick={onLogout}>Log Out</button>
+    </div>
+  );
+}
+
+function LandingPage() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    fetchCurrentUser().then(u => { setUser(u); setChecking(false); });
+  }, []);
+
+  const handleLogout = async () => {
+    await logout();
+    setUser(null);
+  };
+
+  if (checking) return <div className="landing-container"><p style={{ color: '#aaa' }}>Loading...</p></div>;
+
+  return (
     <div className="landing-container">
-      <div className="landing-card">
-        <h1>Distributed Collaborative Study Room</h1>
-        <p className="subtitle">Connect to the MERN distributed network</p>
-        
-        <div className="node-status">
-          <p>Active Network Nodes: {nodes.length}</p>
-          <div className="node-list">
-            {nodes.map(n => (
-              <span key={n.nodeId} className="node-badge">{n.nodeId}</span>
-            ))}
-          </div>
-        </div>
-
-        <div className="forms-container">
-          <form className="join-form" onSubmit={handleCreateRoom}>
-            <h3>Create a Room</h3>
-            <input 
-              type="text" 
-              placeholder="Your Name" 
-              value={userName} 
-              onChange={e => setUserName(e.target.value)} 
-              required
-            />
-            <input 
-              type="text" 
-              placeholder="New Room Name" 
-              value={roomName} 
-              onChange={e => setRoomName(e.target.value)} 
-            />
-            <button type="submit" className="btn-primary">Create Study Room</button>
-          </form>
-
-          <form className="join-form" onSubmit={handleJoinRoom}>
-            <h3>Join a Room</h3>
-            <input 
-              type="text" 
-              placeholder="Your Name" 
-              value={userName} 
-              onChange={e => setUserName(e.target.value)} 
-              required
-            />
-            <input 
-              type="text" 
-              placeholder="Room ID (e.g. DS-101)" 
-              value={roomName} 
-              onChange={e => setRoomName(e.target.value)} 
-            />
-            <button type="submit" className="btn-secondary">Join Study Room</button>
-          </form>
-        </div>
-      </div>
+      {!user && <AuthForm onAuthed={setUser} />}
+      {user && user.role === 'teacher' && <TeacherDashboard user={user} onLogout={handleLogout} />}
+      {user && user.role === 'student' && <StudentDashboard user={user} onLogout={handleLogout} />}
     </div>
   );
 }

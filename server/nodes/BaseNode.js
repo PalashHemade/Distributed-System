@@ -1,27 +1,40 @@
-const express = require('express');
-const cors = require('cors');
-const http = require('http');
 const dotenv = require('dotenv');
 const path = require('path');
-const axios = require('axios');
+
+// Load env vars FIRST, before any local module that might read process.env at
+// module-load time (e.g. the S3 client config). server/nodes/ -> server/ ->
+// FA-Project/.env.
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+
+const express = require('express');
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const http = require('http');
 
 const RpcServer = require('../distributed/rpc/rpcServer');
 const RpcClient = require('../distributed/rpc/rpcClient');
 const MessageBus = require('../distributed/messaging/messageBus');
 const PeerManager = require('../distributed/p2p/peerManager');
 const SocketManager = require('../distributed/streaming/socketManager');
-const mongoose = require('mongoose');
+
+const { connectRequired } = require('../config/db');
+const { errorHandler } = require('../middleware/errorHandler');
+const Outbox = require('../utils/outbox');
+const makePeerDiscoveryService = require('../services/peerDiscoveryService');
+const makeResourceService = require('../services/resourceService');
+
+const classroomRoutes = require('../routes/classroomRoutes');
+const resourceRoutes = require('../routes/resourceRoutes');
+const chatRoutes = require('../routes/chatRoutes');
+const nodeOpsRoutes = require('../routes/nodeOpsRoutes');
 
 process.on('uncaughtException', (err) => {
   console.error('[CRITICAL ERROR] Node Uncaught Exception:', err);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
   console.error('[CRITICAL ERROR] Node Unhandled Rejection:', reason);
 });
-
-// Load env vars
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 class BaseNode {
   constructor(nodeId, port) {
@@ -31,273 +44,65 @@ class BaseNode {
     this.server = http.createServer(this.app);
     this.gatewayUrl = `http://localhost:${process.env.GATEWAY_PORT || 5000}`;
 
-    // Connect to MongoDB
-    if (process.env.MONGODB_URI && mongoose.connection.readyState === 0) {
-      mongoose.connect(process.env.MONGODB_URI)
-        .then(() => console.log(`[${this.nodeId}] Connected to MongoDB`))
-        .catch(err => console.error(`[${this.nodeId}] MongoDB error:`, err.message));
-    }
-    
-    // Internal node state
+    this.outbox = new Outbox(this.nodeId);
+
+    // Internal node state — not shared with the other node processes except
+    // through RPC/MessageBus/P2P/Socket.IO (see CLAUDE.md).
     this.peers = [];
     this.users = 0;
     this.resources = 0;
     this.chatHistory = new Map(); // roomId -> Array of messages
     this.resourceHistory = new Map(); // roomId -> Array of resources
 
-    // Distributed Components
+    // Distributed-communication primitives.
     this.rpcServer = new RpcServer(this);
     this.rpcClient = new RpcClient(this);
     this.messageBus = new MessageBus(this);
     this.peerManager = new PeerManager(this);
     this.socketManager = new SocketManager(this);
-    
+
+    this.peerDiscovery = makePeerDiscoveryService(this);
+
     this.setupMiddleware();
     this.setupRoutes();
+    this.registerRpcMethods();
   }
 
   setupMiddleware() {
-    this.app.use(cors());
+    // `origin: true, credentials: true` (not the previous wildcard "*") — the
+    // JWT now travels as an httpOnly cookie, and credentialed cross-port
+    // requests require a reflected, non-wildcard origin.
+    this.app.use(cors({ origin: true, credentials: true }));
+    this.app.use(cookieParser());
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
   }
 
   setupRoutes() {
+    this.app.use(nodeOpsRoutes(this, this.peerDiscovery));
+    this.app.use('/api/classrooms', classroomRoutes(this));
+    this.app.use('/api/resources', resourceRoutes(this));
+    this.app.use('/api/chat', chatRoutes(this));
 
-    // Health check endpoint
-    this.app.get('/health', (req, res) => {
-      res.status(200).json({
-        nodeId: this.nodeId,
-        status: 'ONLINE',
-        timestamp: new Date().toISOString(),
-        users: this.users,
-        resources: this.resources
-      });
-    });
-
-    // Endpoint for node registry to assign peers
-    this.app.post('/api/peers', (req, res) => {
-      this.peers = req.body.peers;
-      console.log(`[${this.nodeId}] Updated peers:`, this.peers.map(p => p.nodeId).join(', '));
-      res.status(200).json({ success: true });
-    });
-
-    // RPC Endpoint
-    this.app.post('/api/rpc', (req, res) => this.rpcServer.handleRequest(req, res));
-
-    // Messaging Endpoint
-    this.app.post('/api/messaging/receive', (req, res) => {
-      this.messageBus.handleIncoming(req.body);
-      res.status(200).json({ success: true });
-    });
-
-    // P2P Endpoint
-    this.app.post('/api/p2p/receive', (req, res) => this.peerManager.handleIncoming(req, res));
-
-    // Gossip Endpoint for Decentralized Registry
-    this.app.post('/api/p2p/gossip', (req, res) => {
-      const { senderNode, peers } = req.body;
-      let changed = false;
-      
-      // Add sender if not known
-      if (senderNode && !this.peers.find(p => p.nodeId === senderNode.nodeId)) {
-        this.peers.push(senderNode);
-        changed = true;
-      }
-      
-      // Merge other peers
-      if (Array.isArray(peers)) {
-        for (const p of peers) {
-          if (p.nodeId !== this.nodeId && !this.peers.find(existing => existing.nodeId === p.nodeId)) {
-            this.peers.push(p);
-            changed = true;
-          }
-        }
-      }
-      
-      if (changed) {
-        console.log(`[${this.nodeId}] Updated peers via GOSSIP protocol:`, this.peers.map(p => p.nodeId).join(', '));
-      }
-      
-      res.status(200).json({ success: true, peers: this.peers });
-    });
-
-    // File Upload (Multer)
-    const multer = require('multer');
-    const fs = require('fs');
-    
-    const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        const dir = path.resolve(__dirname, `../../../uploads/${this.nodeId}`);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        cb(null, dir);
-      },
-      filename: (req, file, cb) => {
-        cb(null, `${Date.now()}-${file.originalname}`);
-      }
-    });
-    
-    const upload = multer({ storage });
-    this.app.post('/api/resources/upload', upload.single('file'), async (req, res) => {
-      console.log(`[FILE] Resource uploaded to ${this.nodeId}: ${req.file.filename}`);
-      this.resources++;
-      const { v4: uuidv4 } = require('uuid');
-      
-      const resourceData = {
-        resourceId: uuidv4(),
-        fileName: req.file.filename,
-        fileType: req.file.mimetype,
-        size: req.file.size,
-        roomId: req.body.roomId,
-        ownerNodeId: this.nodeId,
-        path: req.file.path,
-        createdAt: Date.now()
-      };
-
-      // Save to MongoDB
-      if (mongoose.connection.readyState === 1) {
-        const { Resource } = require('../../models');
-        try { await new Resource(resourceData).save(); } catch(e) {}
-      }
-
-      // Save to memory
-      if (!this.resourceHistory.has(req.body.roomId)) this.resourceHistory.set(req.body.roomId, []);
-      this.resourceHistory.get(req.body.roomId).push(resourceData);
-
-      // Notify other nodes directly via P2P (Part 17 requirement)
-      for (const peer of this.peers) {
-        try {
-          await this.peerManager.sendToPeer(peer.nodeId, {
-            type: 'RESOURCE_SHARED',
-            payload: resourceData
-          });
-        } catch(e) {}
-      }
-
-      // We still use Message Bus for the client UI update
-      this.messageBus.publish('RESOURCE_SHARED', resourceData);
-      
-      // Local Broadcast
-      this.socketManager.io.to(resourceData.roomId).emit('resource_shared', resourceData);
-      
-      res.status(200).json({ success: true, resource: resourceData });
-    });
-
-    this.app.get('/api/resources/room/:roomId', async (req, res) => {
-      if (mongoose.connection.readyState === 1) {
-        const { Resource } = require('../../models');
-        const resources = await Resource.find({ roomId: req.params.roomId });
-        return res.status(200).json(resources);
-      }
-      res.status(200).json(this.resourceHistory.get(req.params.roomId) || []);
-    });
-
-    this.app.get('/api/chat/room/:roomId', (req, res) => {
-      res.status(200).json(this.chatHistory.get(req.params.roomId) || []);
-    });
-
-    // Register RPC Methods
-    this.rpcServer.registerMethod('findResource', async (params, senderNode) => {
-      const { fileName } = params;
-      console.log(`[RPC SERVER] Node ${this.nodeId} received findResource from ${senderNode}`);
-      const dir = path.resolve(__dirname, `../../../uploads/${this.nodeId}`);
-      const filePath = path.join(dir, fileName);
-      const exists = require('fs').existsSync(filePath);
-      return { found: exists, nodeId: this.nodeId };
-    });
-
-    this.rpcServer.registerMethod('getResource', async (params, senderNode) => {
-      const { fileName } = params;
-      console.log(`[RPC SERVER] Node ${this.nodeId} received getResource from ${senderNode}`);
-      return { url: `http://localhost:${this.port}/uploads/${this.nodeId}/${fileName}` };
-    });
-
-    // Client endpoint to find and get a resource across the network
-    this.app.get('/api/resources/find/:fileName', async (req, res) => {
-      const { fileName } = req.params;
-      
-      // First check locally
-      const dir = path.resolve(__dirname, `../../../uploads/${this.nodeId}`);
-      if (fs.existsSync(path.join(dir, fileName))) {
-        return res.status(200).json({ found: true, url: `http://localhost:${this.port}/uploads/${this.nodeId}/${fileName}` });
-      }
-
-      // If not local, use RPC to ask peers
-      console.log(`[RPC] Node ${this.nodeId} searching for ${fileName} on peers`);
-      for (const peer of this.peers) {
-        try {
-          const result = await this.rpcClient.call(peer.nodeId, 'findResource', { fileName });
-          if (result && result.found) {
-            console.log(`[RPC] Resource found on ${peer.nodeId}`);
-            const getResult = await this.rpcClient.call(peer.nodeId, 'getResource', { fileName });
-            return res.status(200).json({ found: true, url: getResult.url });
-          }
-        } catch (err) {
-          console.warn(`[RPC WARN] Peer ${peer.nodeId} search failed: ${err.message}`);
-        }
-      }
-
-      res.status(404).json({ error: 'Resource not found on any node' });
-    });
-
-    // Serve static files
-    this.app.use('/uploads', express.static(path.resolve(__dirname, '../../../uploads')));
+    // Centralized error handler — must be registered after all routes.
+    this.app.use(errorHandler);
   }
 
-  async registerWithGateway() {
-    try {
-      await axios.post(`${this.gatewayUrl}/api/registry/register`, {
-        nodeId: this.nodeId,
-        host: 'localhost',
-        port: this.port
-      });
-      console.log(`[${this.nodeId}] Registered with Gateway successfully.`);
-      
-      // Start heartbeat
-      if (!this.heartbeatInterval) {
-        this.heartbeatInterval = setInterval(() => {
-          axios.post(`${this.gatewayUrl}/api/registry/heartbeat`, {
-            nodeId: this.nodeId,
-            users: this.users,
-            resources: this.resources
-          }).catch(() => {});
-        }, 5000);
-      }
-    } catch (error) {
-      console.error(`[${this.nodeId}] Failed to register with Gateway:`, error.message);
-      // Retry after some time
-      setTimeout(() => this.registerWithGateway(), 5000);
-    }
+  // RPC methods resolve via Mongo + S3 now (resourceService), not local disk
+  // — see services/resourceService.js and docs/distributed-concepts.md for
+  // why RPC is kept even though a local Mongo query alone would also work.
+  registerRpcMethods() {
+    const resourceService = makeResourceService(this);
+    this.rpcServer.registerMethod('findResource', (params) => resourceService.rpcFindResource(params));
+    this.rpcServer.registerMethod('getResource', (params) => resourceService.rpcGetResource(params));
   }
 
-  startGossip() {
-    setInterval(() => {
-      if (this.peers.length > 0) {
-        // Pick a random peer to gossip with
-        const peer = this.peers[Math.floor(Math.random() * this.peers.length)];
-        axios.post(`http://${peer.host}:${peer.port}/api/p2p/gossip`, {
-          senderNode: { nodeId: this.nodeId, host: 'localhost', port: this.port },
-          peers: this.peers
-        }).catch(() => {});
-      } else {
-        // If we have no peers (e.g., Gateway is completely down), try pinging default known ports
-        const fallbackPorts = [5001, 5002, 5003].filter(p => p !== this.port);
-        for (const port of fallbackPorts) {
-          axios.post(`http://localhost:${port}/api/p2p/gossip`, {
-            senderNode: { nodeId: this.nodeId, host: 'localhost', port: this.port },
-            peers: this.peers
-          }).catch(() => {});
-        }
-      }
-    }, 10000); // Gossip every 10 seconds
-  }
-
-  start() {
+  async start() {
+    await connectRequired(this.nodeId);
     this.socketManager.initialize();
     this.server.listen(this.port, () => {
       console.log(`[${this.nodeId}] Node server running on port ${this.port}`);
-      this.registerWithGateway();
-      this.startGossip();
+      this.peerDiscovery.start();
     });
   }
 }
