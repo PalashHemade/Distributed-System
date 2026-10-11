@@ -788,6 +788,34 @@
   font-size: 0.8rem;
 }
 
+.panel-hint {
+  font-size: 0.72rem;
+  color: var(--grey-light);
+  margin-top: 0.5rem;
+  text-align: center;
+}
+
+.share-requests {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px dashed var(--border);
+}
+
+.eyebrow-small {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--yellow-deep);
+  margin-bottom: 0.4rem;
+}
+
+.status-pending {
+  color: var(--yellow-deep);
+  font-style: normal;
+  font-weight: 600;
+}
+
 /* ---------- Drawers (teacher-only panels) ---------- */
 
 .drawer-overlay {

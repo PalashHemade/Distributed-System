@@ -2,11 +2,13 @@ const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const makeClassroomController = require('../controllers/classroomController');
 const makeChatController = require('../controllers/chatController');
+const makeResourceController = require('../controllers/resourceController');
 
 module.exports = function classroomRoutes(node) {
   const router = express.Router();
   const ctrl = makeClassroomController(node);
   const chatCtrl = makeChatController(node);
+  const resourceCtrl = makeResourceController(node);
 
   router.post('/', requireAuth, requireRole('teacher'), ctrl.create);
   router.get('/:code', requireAuth, ctrl.getByCode);
@@ -19,6 +21,8 @@ module.exports = function classroomRoutes(node) {
   router.patch('/:id/end', requireAuth, requireRole('teacher'), ctrl.endClassroom);
   router.get('/:id/attendance', requireAuth, requireRole('teacher'), ctrl.attendance);
   router.get('/:id/conversations/:peerId/messages', requireAuth, chatCtrl.conversationMessages);
+  router.get('/:id/resources/pending', requireAuth, requireRole('teacher'), resourceCtrl.pendingRequests);
+  router.patch('/:id/resources/:resourceId/decision', requireAuth, requireRole('teacher'), resourceCtrl.decideShare);
 
   return router;
 };

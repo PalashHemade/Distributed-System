@@ -4,6 +4,7 @@ const membershipCache = require('../../services/membershipCache');
 const makeChatService = require('../../services/chatService');
 const makePrivateChatService = require('../../services/privateChatService');
 const makeAttendanceService = require('../../services/attendanceService');
+const { upsertResourceHistory } = require('../../services/resourceService');
 
 // This is the "controller" layer for the real-time surface: it wires socket
 // events to services exactly the way routes/*.js wire HTTP requests to
@@ -211,9 +212,23 @@ class SocketManager {
     });
 
     bus.subscribe('RESOURCE_SHARED', (msg) => {
-      if (!this.node.resourceHistory.has(msg.payload.roomId)) this.node.resourceHistory.set(msg.payload.roomId, []);
-      this.node.resourceHistory.get(msg.payload.roomId).push(msg.payload);
+      // Upsert, not push — this event also fires when a PENDING share request
+      // is approved, re-broadcasting a resource this node may already have a
+      // stale (pending) copy of.
+      upsertResourceHistory(this.node, msg.payload.roomId, msg.payload);
       this.io.to(`classroom:${msg.payload.roomId}`).emit('resource_shared', msg.payload);
+    });
+
+    bus.subscribe('SHARE_REQUESTED', (msg) => {
+      if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit('share_requested', msg.payload);
+    });
+
+    bus.subscribe('SHARE_APPROVED', (msg) => {
+      if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit('share_approved', msg.payload);
+    });
+
+    bus.subscribe('SHARE_REJECTED', (msg) => {
+      if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit('share_rejected', msg.payload);
     });
 
     bus.subscribe('JOIN_REQUESTED', (msg) => {

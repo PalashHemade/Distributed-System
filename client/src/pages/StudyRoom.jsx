@@ -68,6 +68,7 @@ function StudyRoom() {
 
   const [file, setFile] = useState(null);
   const [resources, setResources] = useState([]);
+  const [shareRequests, setShareRequests] = useState([]); // teacher-only: pending student uploads
 
   const [privateTarget, setPrivateTarget] = useState(null);
   const [privateMessages, setPrivateMessages] = useState([]);
@@ -116,6 +117,13 @@ function StudyRoom() {
     } catch (err) { /* non-fatal */ }
   }, []);
 
+  const refreshShareRequests = useCallback(async (base, classroomId) => {
+    try {
+      const res = await axios.get(`${base}/api/classrooms/${classroomId}/resources/pending`);
+      setShareRequests(res.data);
+    } catch (err) { /* non-fatal */ }
+  }, []);
+
   // --- Resolve classroom + membership, then wire the socket ---
   useEffect(() => {
     if (!user) return;
@@ -140,6 +148,7 @@ function StudyRoom() {
           setPhase('active');
           refreshWaitingList(base, cls.classroomId);
           refreshMembers(base, cls.classroomId);
+          refreshShareRequests(base, cls.classroomId);
           return;
         }
 
@@ -161,7 +170,7 @@ function StudyRoom() {
     })();
 
     return () => { cancelled = true; };
-  }, [code, user, refreshWaitingList, refreshMembers]);
+  }, [code, user, refreshWaitingList, refreshMembers, refreshShareRequests]);
 
   // Student poll fallback while waiting — covers a dropped real-time push.
   useEffect(() => {
@@ -226,7 +235,32 @@ function StudyRoom() {
 
     newSocket.on('chat_message', (envelope) => { if (envelope) setMessages(prev => [...prev, envelope]); });
 
-    newSocket.on('resource_shared', (resource) => { setResources(prev => [...prev, resource]); });
+    // Upsert by resourceId — this also fires when a PENDING upload of ours
+    // gets approved, re-delivering the same resource with a new status.
+    newSocket.on('resource_shared', (resource) => {
+      setResources(prev => {
+        const idx = prev.findIndex(r => r.resourceId === resource.resourceId);
+        if (idx >= 0) { const next = [...prev]; next[idx] = resource; return next; }
+        return [...prev, resource];
+      });
+    });
+
+    newSocket.on('share_requested', () => {
+      if (isTeacherOwner) refreshShareRequests(nodeBase, classroom.classroomId);
+    });
+
+    newSocket.on('share_approved', (payload) => {
+      if (payload.uploaderId === user.userId) {
+        setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `Your file "${payload.originalName}" was approved and is now visible to the class.` } }]);
+      }
+    });
+
+    newSocket.on('share_rejected', (payload) => {
+      setResources(prev => prev.filter(r => r.resourceId !== payload.resourceId));
+      if (payload.uploaderId === user.userId) {
+        setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `Your file "${payload.originalName}" was not approved for sharing.` } }]);
+      }
+    });
 
     newSocket.on('private_message', (envelope) => {
       setPrivateMessages(prev => (prev.some(m => m.messageId === envelope.messageId) ? prev : [...prev, envelope]));
@@ -272,8 +306,11 @@ function StudyRoom() {
     if (phase !== 'active' || !nodeBase || !classroom) return;
     axios.get(`${nodeBase}/api/resources/room/${classroom.classroomId}`).then(res => setResources(res.data)).catch(() => {});
     axios.get(`${nodeBase}/api/chat/room/${classroom.classroomId}`).then(res => setMessages(res.data)).catch(() => {});
-    if (isTeacherOwner) refreshMembers(nodeBase, classroom.classroomId);
-  }, [phase, nodeBase, classroom, isTeacherOwner, refreshMembers]);
+    if (isTeacherOwner) {
+      refreshMembers(nodeBase, classroom.classroomId);
+      refreshShareRequests(nodeBase, classroom.classroomId);
+    }
+  }, [phase, nodeBase, classroom, isTeacherOwner, refreshMembers, refreshShareRequests]);
 
   const sendMessage = (e) => {
     e.preventDefault();
@@ -299,6 +336,13 @@ function StudyRoom() {
       await axios.patch(`${nodeBase}/api/classrooms/${classroom.classroomId}/members/${userId}`, { status });
       refreshWaitingList(nodeBase, classroom.classroomId);
       refreshMembers(nodeBase, classroom.classroomId);
+    } catch (err) { alert(err.response?.data?.error || err.message); }
+  };
+
+  const decideShare = async (resourceId, decision) => {
+    try {
+      await axios.patch(`${nodeBase}/api/classrooms/${classroom.classroomId}/resources/${resourceId}/decision`, { decision });
+      setShareRequests(prev => prev.filter(r => r.resourceId !== resourceId));
     } catch (err) { alert(err.response?.data?.error || err.message); }
   };
 
@@ -330,8 +374,13 @@ function StudyRoom() {
     formData.append('file', file);
     formData.append('roomId', classroom.classroomId);
     try {
-      await axios.post(`${nodeBase}/api/resources/upload`, formData);
-      alert('File successfully uploaded.');
+      const res = await axios.post(`${nodeBase}/api/resources/upload`, formData);
+      if (res.data.resource?.status === 'PENDING') {
+        alert('Your file was sent to the teacher for approval. It will appear for everyone once approved.');
+        setResources(prev => [...prev, res.data.resource]);
+      } else {
+        alert('File successfully uploaded.');
+      }
       setFile(null);
     } catch (err) {
       alert(`Upload failed: ${err.response?.data?.error || err.message}`);
@@ -445,6 +494,7 @@ function StudyRoom() {
         </button>
         <button className={`rail-btn ${activeTab === 'resources' ? 'active' : ''}`} title="Resources" onClick={() => setActiveTab('resources')}>
           <Icon name="file" />
+          {isTeacherOwner && shareRequests.length > 0 && <span className="rail-badge">{shareRequests.length}</span>}
         </button>
 
         {isTeacherOwner && (
@@ -631,22 +681,45 @@ function StudyRoom() {
 
         {activeTab === 'resources' && (
           <div className="panel-body resources-list">
+            {isTeacherOwner && shareRequests.length > 0 && (
+              <div className="share-requests">
+                <p className="eyebrow-small">Share requests ({shareRequests.length})</p>
+                {shareRequests.map(r => (
+                  <div key={r.resourceId} className="resource-row">
+                    <div className="resource-row-icon"><Icon name="file" size={16} /></div>
+                    <div className="resource-row-meta">
+                      <strong>{r.originalName}</strong>
+                      <span>from {r.uploaderName || 'a student'} · {(r.size / 1024).toFixed(1)} KB</span>
+                    </div>
+                    <button className="people-action accept" title="Approve" onClick={() => decideShare(r.resourceId, 'APPROVED')}><Icon name="check" size={14} /></button>
+                    <button className="people-action danger" title="Reject" onClick={() => decideShare(r.resourceId, 'REJECTED')}><Icon name="close" size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {resources.length === 0 ? <p className="panel-empty">No resources shared yet.</p> : null}
             {resources.map(r => (
               <div key={r.resourceId} className="resource-row">
                 <div className="resource-row-icon"><Icon name="file" size={16} /></div>
                 <div className="resource-row-meta">
                   <strong>{r.originalName || r.fileName}</strong>
-                  <span>{r.ownerNodeId} · {(r.size / 1024).toFixed(1)} KB</span>
+                  <span>
+                    {r.ownerNodeId} · {(r.size / 1024).toFixed(1)} KB
+                    {r.status === 'PENDING' && <em className="status-pending"> · awaiting approval</em>}
+                  </span>
                 </div>
                 <button className="people-action" title="Download via RPC" onClick={() => handleResourceDownload(r.fileName)}>↓</button>
               </div>
             ))}
             {classroom.settings.fileSharingEnabled ? (
-              <form onSubmit={handleFileUpload} className="resource-upload">
-                <input type="file" onChange={e => setFile(e.target.files[0])} />
-                <button type="submit" className="btn-primary">Upload</button>
-              </form>
+              <>
+                <form onSubmit={handleFileUpload} className="resource-upload">
+                  <input type="file" onChange={e => setFile(e.target.files[0])} />
+                  <button type="submit" className="btn-primary">Upload</button>
+                </form>
+                {!isTeacherOwner && <p className="panel-hint">Shared files need teacher approval before the class can see them.</p>}
+              </>
             ) : <p className="panel-disabled-note">File sharing is disabled by the teacher.</p>}
           </div>
         )}

@@ -74,6 +74,13 @@ const resourceSchema = new mongoose.Schema({
   uploaderId: { type: String },
   s3Bucket: { type: String, required: true },
   s3Key: { type: String, required: true },
+  // Teacher uploads are always APPROVED immediately. A student upload (when
+  // fileSharingEnabled is on) starts PENDING and is invisible to the rest of
+  // the classroom — it becomes a normal shared resource only once the
+  // teacher approves this specific request (see resourceService.js).
+  status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'APPROVED' },
+  decidedAt: { type: Date },
+  decidedBy: { type: String },
   createdAt: { type: Date, default: Date.now }
 });
 
