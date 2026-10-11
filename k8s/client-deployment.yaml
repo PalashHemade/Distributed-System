@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: distributed-study-room
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: client }
+  template:
+    metadata:
+      labels: { app: client }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: client
+          # VITE_GATEWAY_URL is baked into this image at build time (see
+          # client/Dockerfile) — it is NOT read from the ConfigMap at
+          # runtime like the server images' env vars are. If you change the
+          # LAN IP in configmap.yaml, you must also rebuild this image with
+          # the matching --build-arg (see docs/kubernetes-case-study.md).
+          image: study-room-client:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "25m", memory: "32Mi" }
+            limits: { cpu: "100m", memory: "128Mi" }

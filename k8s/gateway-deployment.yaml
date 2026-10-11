@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: distributed-study-room
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+    spec:
+      # hostNetwork makes this pod's port directly reachable at
+      # <this-machine's-LAN-IP>:5000 — the same address and port it already
+      # uses in local dev — rather than hiding behind a ClusterIP only
+      # other pods can reach. This is what "expose it on the same network"
+      # means here: any device on the LAN can hit it, same as if the
+      # process were just running natively on this machine.
+      hostNetwork: true
+      # Required whenever hostNetwork is true — without it, DNS resolution
+      # inside the pod (needed for the mongodb+srv:// SRV lookup to Atlas)
+      # breaks instead of going through the cluster's DNS as normal.
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: gateway
+          image: study-room-server:local
+          imagePullPolicy: Never # built locally — see docs/kubernetes-case-study.md
+          command: ["node", "gateway/server.js"]
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef: { name: study-room-config }
+            - secretRef: { name: study-room-secret }
+          livenessProbe:
+            httpGet: { path: /health, port: 5000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 5000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }

@@ -1,0 +1,37 @@
+# See node-a-deployment.yaml's comment — replicas must stay at 1, same reason.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-b
+  namespace: distributed-study-room
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: node-b }
+  template:
+    metadata:
+      labels: { app: node-b }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: node-b
+          image: study-room-server:local
+          imagePullPolicy: Never
+          command: ["node", "nodes/nodeB/server.js"]
+          ports:
+            - containerPort: 5002
+          envFrom:
+            - configMapRef: { name: study-room-config }
+            - secretRef: { name: study-room-secret }
+          livenessProbe:
+            httpGet: { path: /health, port: 5002 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 5002 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }

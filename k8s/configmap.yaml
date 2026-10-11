@@ -1,0 +1,22 @@
+# Non-secret configuration, shared by the Gateway and all three nodes.
+#
+# REPLACE_WITH_YOUR_LAN_IP appears 5 times below — substitute your actual
+# machine's LAN IP everywhere (not 127.0.0.1/localhost: other devices on the
+# network, and the browser itself, need a real reachable address). Find it
+# with `ipconfig` (Windows, look for "IPv4 Address" on your active adapter)
+# or `hostname -I` (Linux/WSL) — typically something like 192.168.1.42.
+#
+# Every pod in this project uses hostNetwork: true (see each Deployment),
+# which is what makes "localhost-equivalent" ports 5000-5003 directly
+# reachable at <this-machine's-LAN-IP>:<port> from any other device on the
+# same network — see docs/kubernetes-case-study.md for why.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: study-room-config
+  namespace: distributed-study-room
+data:
+  GATEWAY_PORT: "5000"
+  GATEWAY_URL: "http://localhost:5000"
+  NODE_HOST: "localhost"
+  PEER_NODES: "node-A@localhost:5001,node-B@localhost:5002,node-C@localhost:5003"

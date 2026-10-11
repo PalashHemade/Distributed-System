@@ -1,0 +1,44 @@
+# IMPORTANT: replicas must stay at 1. Unlike a typical stateless Deployment
+# meant to be scaled horizontally, this pod has a fixed identity (NODE_ID
+# defaults to "node-A" in nodes/nodeA/server.js) — two replicas would be two
+# processes claiming to be the same node, colliding in the Gateway's
+# registry and breaking the Bully leader-election rank assumption (ranks
+# are derived from nodeId, which must be unique). node-A/B/C are three
+# separate Deployments specifically because they're three distinct
+# identities, not three copies of one thing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-a
+  namespace: distributed-study-room
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: node-a }
+  template:
+    metadata:
+      labels: { app: node-a }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: node-a
+          image: study-room-server:local
+          imagePullPolicy: Never
+          command: ["node", "nodes/nodeA/server.js"]
+          ports:
+            - containerPort: 5001
+          envFrom:
+            - configMapRef: { name: study-room-config }
+            - secretRef: { name: study-room-secret }
+          livenessProbe:
+            httpGet: { path: /health, port: 5001 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 5001 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
