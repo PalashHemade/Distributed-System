@@ -17,10 +17,14 @@ module.exports = function registryController(registryService) {
   });
 
   function heartbeat(req, res) {
-    const { nodeId, users, resources } = req.body;
-    registryService.heartbeat(nodeId, users, resources);
+    const { nodeId, ...fields } = req.body;
+    registryService.heartbeat(nodeId, fields);
     res.status(200).json({ success: true });
   }
 
-  return { health, register, heartbeat };
+  function globalState(req, res) {
+    res.status(200).json(registryService.getGlobalState());
+  }
+
+  return { health, register, heartbeat, globalState };
 };

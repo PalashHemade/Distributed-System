@@ -1,4 +1,5 @@
 const { AttendanceEvent } = require('../models');
+const { vcIncrement } = require('./logicalClocks');
 
 const GRACE_MS = 35000;
 
@@ -15,9 +16,15 @@ module.exports = function attendanceService(node) {
   const timers = new Map(); // `${classroomId}:${userId}` -> timeout handle
 
   function writeEvent(classroomId, userId, name, type) {
-    console.log(`[ATTENDANCE] ${node.nodeId}: ${type} — ${name} (${userId}) in classroom ${classroomId}`);
+    // A join/leave is a local event this node observed directly — tick
+    // (not send/receive) both clocks, then snapshot the vector for storage.
+    const lamportTs = node.lamportClock.tick();
+    node.vectorClock = vcIncrement(node.vectorClock, node.nodeId);
+    const vectorClock = { ...node.vectorClock };
+
+    console.log(`[ATTENDANCE] ${node.nodeId}: ${type} — ${name} (${userId}) in classroom ${classroomId} [L=${lamportTs}]`);
     node.outbox.enqueue(async () => {
-      await new AttendanceEvent({ classroomId, userId, name, type, nodeId: node.nodeId }).save();
+      await new AttendanceEvent({ classroomId, userId, name, type, nodeId: node.nodeId, lamportTs, vectorClock }).save();
     }, `attendance ${type} ${classroomId}:${userId}`);
   }
 

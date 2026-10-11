@@ -11,7 +11,12 @@ module.exports = function nodeOpsController(node, peerDiscovery) {
       timestamp: new Date().toISOString(),
       users: node.users,
       resources: node.resources,
-      outboxPending: node.outbox.pendingCount
+      outboxPending: node.outbox.pendingCount,
+      leader: node.leaderElection.currentLeader,
+      lamportClock: node.lamportClock.value,
+      vectorClock: { ...node.vectorClock },
+      clockOffsetMs: node.clockOffsetMs,
+      activeLocks: node.leaderElection.getActiveLocks()
     });
   }
 

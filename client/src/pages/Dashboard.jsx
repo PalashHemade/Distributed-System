@@ -9,6 +9,7 @@ function Dashboard() {
   const [nodes, setNodes] = useState([]);
   const [events, setEvents] = useState([]);
   const [filter, setFilter] = useState('All');
+  const [globalState, setGlobalState] = useState(null);
 
   useEffect(() => {
     // Initial fetch
@@ -19,6 +20,9 @@ function Dashboard() {
 
         const eventsRes = await axios.get(`${GATEWAY_URL}/api/monitor/events`);
         setEvents(eventsRes.data);
+
+        const globalStateRes = await axios.get(`${GATEWAY_URL}/api/global-state`);
+        setGlobalState(globalStateRes.data);
       } catch (err) {
         console.error('Failed to fetch dashboard stats', err);
       }
@@ -30,6 +34,10 @@ function Dashboard() {
 
     socket.on('node_status', (updatedNodes) => {
       setNodes(updatedNodes);
+    });
+
+    socket.on('global_state', (state) => {
+      setGlobalState(state);
     });
 
     socket.on('network_event', (event) => {
@@ -44,7 +52,29 @@ function Dashboard() {
   return (
     <div className="dashboard-container">
       <h1>Distributed System Dashboard</h1>
-      
+
+      {globalState && (
+        <div className="global-state-section">
+          <h2>Global State</h2>
+          <div className="global-state-grid">
+            <div className="global-state-item">
+              <span className="gs-label">Leader</span>
+              <span className="gs-value">{globalState.leader || 'Electing...'}</span>
+            </div>
+            <div className="global-state-item">
+              <span className="gs-label">Lamport Clocks</span>
+              <span className="gs-value">
+                {Object.entries(globalState.clocks || {}).map(([id, val]) => `${id}=${val}`).join('  ')}
+              </span>
+            </div>
+            <div className="global-state-item">
+              <span className="gs-label">Active Locks</span>
+              <span className="gs-value">{globalState.activeLocks?.length ? globalState.activeLocks.join(', ') : 'None'}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="nodes-section">
         <h2>Network Topology</h2>
         
@@ -124,11 +154,12 @@ function Dashboard() {
         <div className="nodes-grid">
           {nodes.map(node => (
             <div key={node.nodeId} className={`node-card ${node.status.toLowerCase()}`}>
-              <h3>{node.nodeId}</h3>
+              <h3>{node.nodeId} {globalState?.leader === node.nodeId && <span className="leader-crown" title="Elected leader">&#9733;</span>}</h3>
               <p>{node.host || 'localhost'}:{node.port}</p>
               <p>Status: <strong className={node.status.toLowerCase()}>{node.status}</strong></p>
               <p>Users: {node.users || 0}</p>
               <p>Resources: {node.resources || 0}</p>
+              <p>Lamport: {node.lamportClock ?? 0} &middot; Offset: {node.clockOffsetMs ?? 0}ms</p>
               <p className="last-seen">Last contact: {new Date(node.lastSeen).toLocaleTimeString()}</p>
             </div>
           ))}

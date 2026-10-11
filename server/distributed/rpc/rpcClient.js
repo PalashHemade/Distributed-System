@@ -1,5 +1,5 @@
 const axios = require('axios');
-const RpcProtocol = require('./rpcProtocol');
+const { vcIncrement, vcMerge } = require('../../services/logicalClocks');
 
 class RpcClient {
   constructor(node) {
@@ -24,11 +24,16 @@ class RpcClient {
       throw new Error(`Circuit Breaker OPEN for node ${targetNodeId}`);
     }
     const messageId = require('uuid').v4();
+    // Same clock hook as MessageBus — RPC is real inter-node traffic too, so
+    // it should advance both clocks, not just pub/sub messages.
+    this.node.vectorClock = vcIncrement(this.node.vectorClock, this.node.nodeId);
     const payload = {
       messageId,
       method,
       params,
       senderNodeId: this.node.nodeId,
+      lamportTs: this.node.lamportClock.send(),
+      vectorClock: { ...this.node.vectorClock },
     };
 
     const targetNode = this.node.peers.find((p) => p.nodeId === targetNodeId);
@@ -46,7 +51,14 @@ class RpcClient {
       }).catch(()=>{});
 
       const response = await axios.post(`http://${targetNode.host}:${targetNode.port}/api/rpc`, payload, { timeout: this.timeout });
-      
+
+      // The response is a message too — advance clocks on receipt (merge then
+      // increment own component, same rule applied everywhere else).
+      this.node.lamportClock.receive(response.data.lamportTs || 0);
+      if (response.data.vectorClock) {
+        this.node.vectorClock = vcIncrement(vcMerge(this.node.vectorClock, response.data.vectorClock), this.node.nodeId);
+      }
+
       // Log successful RPC
       require('axios').post(this.node.gatewayUrl + '/api/monitor/message', {
         timestamp: Date.now(),

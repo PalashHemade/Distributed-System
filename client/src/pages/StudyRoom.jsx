@@ -83,10 +83,14 @@ function StudyRoom() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
+  const [callRoster, setCallRoster] = useState([]); // [{userId, name}] — who's currently in the call
+  const [remoteStreams, setRemoteStreams] = useState({}); // userId -> MediaStream, for the video grid
   const localStream = useRef(null);
   const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const peerConnection = useRef(null);
+  // Mesh: one RTCPeerConnection per other call participant, keyed by their
+  // userId — replaces the old single `peerConnection` ref, which only ever
+  // supported exactly 2 people.
+  const peerConnections = useRef(new Map());
 
   // Presentational-only state for the right panel and the copy-code affordance.
   const [activeTab, setActiveTab] = useState('chat'); // 'people' | 'chat' | 'resources'
@@ -277,24 +281,42 @@ function StudyRoom() {
       setMessages(prev => [...prev, { type: 'SYSTEM', payload: { text: `Error: ${payload.error}` } }]);
     });
 
+    // Mesh signaling — each message is keyed by fromUserId, routed to a
+    // specific entry in the peerConnections map, not a single shared ref.
     newSocket.on('webrtc_offer', async (data) => {
-      if (!peerConnection.current) { const started = await startWebRTC(false); if (!started) return; }
       try {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-        const answer = await peerConnection.current.createAnswer();
-        await peerConnection.current.setLocalDescription(answer);
-        newSocket.emit('webrtc_answer', { roomId: classroom.classroomId, answer });
+        const pc = await ensurePeerConnection(data.fromUserId);
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        newSocket.emit('webrtc_answer', { roomId: classroom.classroomId, toUserId: data.fromUserId, answer });
       } catch (err) { console.error('Error handling webrtc_offer:', err); }
     });
 
     newSocket.on('webrtc_answer', async (data) => {
-      try { if (peerConnection.current) await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.answer)); }
-      catch (err) { console.error('Error handling webrtc_answer:', err); }
+      try {
+        const pc = peerConnections.current.get(data.fromUserId);
+        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      } catch (err) { console.error('Error handling webrtc_answer:', err); }
     });
 
     newSocket.on('webrtc_ice', async (data) => {
-      try { if (peerConnection.current) await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.candidate)); }
-      catch (err) { console.error('Error adding ice candidate:', err); }
+      try {
+        const pc = peerConnections.current.get(data.fromUserId);
+        if (pc) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } catch (err) { console.error('Error adding ice candidate:', err); }
+    });
+
+    newSocket.on('call_participant_joined', (data) => {
+      if (data.userId === user.userId) return;
+      setCallRoster(prev => prev.some(p => p.userId === data.userId) ? prev : [...prev, { userId: data.userId, name: data.name }]);
+    });
+
+    newSocket.on('call_participant_left', (data) => {
+      setCallRoster(prev => prev.filter(p => p.userId !== data.userId));
+      const pc = peerConnections.current.get(data.userId);
+      if (pc) { pc.close(); peerConnections.current.delete(data.userId); }
+      setRemoteStreams(prev => { const next = { ...prev }; delete next[data.userId]; return next; });
     });
 
     return () => { newSocket.close(); socketRef.current = null; };
@@ -402,40 +424,69 @@ function StudyRoom() {
     navigate('/');
   };
 
-  const startWebRTC = async (isCaller = true) => {
+  // Creates (or returns the existing) RTCPeerConnection for one specific
+  // call participant — the mesh replacement for the old single shared ref.
+  // If we don't have local media yet (someone offered us a call before we'd
+  // started our own), acquire it here so there's something to send back.
+  const ensurePeerConnection = async (peerId) => {
+    let pc = peerConnections.current.get(peerId);
+    if (pc) return pc;
+
+    if (!localStream.current) {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStream.current = stream;
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      setCallActive(true); setAudioEnabled(true); setVideoEnabled(true); setScreenSharing(false);
+      socketRef.current?.emit('call_join', { roomId: classroom.classroomId });
+    }
+
+    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        socketRef.current.emit('webrtc_ice', { roomId: classroom.classroomId, toUserId: peerId, candidate: event.candidate });
+      }
+    };
+    pc.ontrack = (event) => {
+      setRemoteStreams(prev => ({ ...prev, [peerId]: event.streams[0] }));
+    };
+
+    peerConnections.current.set(peerId, pc);
+    return pc;
+  };
+
+  // Newcomer-initiates convention (avoids offer glare): joining the call
+  // means offering to everyone already in `callRoster`; anyone who joins
+  // after us will offer to us in turn via the webrtc_offer listener above.
+  const startCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStream.current = stream;
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
       setCallActive(true); setAudioEnabled(true); setVideoEnabled(true); setScreenSharing(false);
 
-      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      peerConnection.current = pc;
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      socketRef.current?.emit('call_join', { roomId: classroom.classroomId });
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) socketRef.current.emit('webrtc_ice', { roomId: classroom.classroomId, candidate: event.candidate });
-      };
-      pc.ontrack = (event) => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0]; };
-
-      if (isCaller && socketRef.current) {
+      for (const peer of callRoster) {
+        const pc = await ensurePeerConnection(peer.userId);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        socketRef.current.emit('webrtc_offer', { roomId: classroom.classroomId, offer });
+        socketRef.current.emit('webrtc_offer', { roomId: classroom.classroomId, toUserId: peer.userId, offer });
       }
-      return true;
     } catch (err) {
-      console.error('Error starting WebRTC:', err);
+      console.error('Error starting call:', err);
       alert('Could not access camera/microphone.');
-      return false;
     }
   };
 
   const endCall = () => {
-    if (peerConnection.current) { peerConnection.current.close(); peerConnection.current = null; }
+    for (const pc of peerConnections.current.values()) pc.close();
+    peerConnections.current.clear();
+    setRemoteStreams({});
     if (localStream.current) { localStream.current.getTracks().forEach(t => t.stop()); localStream.current = null; }
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (callActive) socketRef.current?.emit('call_leave', { roomId: classroom.classroomId });
     setCallActive(false); setScreenSharing(false);
   };
 
@@ -489,7 +540,7 @@ function StudyRoom() {
         <button className={`rail-btn ${handRaisedSelf ? 'active' : ''}`} title={handRaisedSelf ? 'Lower hand' : 'Raise hand'} onClick={toggleHand}>
           <Icon name="hand" />
         </button>
-        <button className={`rail-btn ${callActive ? 'active' : ''}`} title="Video call" onClick={() => (callActive ? endCall() : startWebRTC(true))}>
+        <button className={`rail-btn ${callActive ? 'active' : ''}`} title="Video call" onClick={() => (callActive ? endCall() : startCall())}>
           <Icon name="video" />
         </button>
         <button className={`rail-btn ${activeTab === 'resources' ? 'active' : ''}`} title="Resources" onClick={() => setActiveTab('resources')}>
@@ -548,15 +599,22 @@ function StudyRoom() {
                 </svg>
               </div>
               <p>No active video call</p>
-              <button className="btn-primary" onClick={() => startWebRTC(true)}>Start Video Call <Icon name="video" size={16} /></button>
+              <button className="btn-primary" onClick={startCall}>Start Video Call <Icon name="video" size={16} /></button>
             </div>
           ) : (
             <div className="stage-video">
-              <video ref={remoteVideoRef} autoPlay className="stage-remote" />
               <div className="stage-badge">{isReconnecting ? 'Reconnecting...' : 'Live'}</div>
-              <div className="stage-pip">
-                <video ref={localVideoRef} autoPlay muted className="stage-local" />
-                {!audioEnabled && <span className="pip-muted"><Icon name="micOff" size={12} /></span>}
+              <div className="video-grid">
+                <div className="video-tile">
+                  <video ref={localVideoRef} autoPlay muted className="tile-video" />
+                  <span className="tile-label">You {audioEnabled ? '' : '(Muted)'}</span>
+                </div>
+                {Object.entries(remoteStreams).map(([peerId, stream]) => (
+                  <div className="video-tile" key={peerId}>
+                    <video autoPlay className="tile-video" ref={el => { if (el && el.srcObject !== stream) el.srcObject = stream; }} />
+                    <span className="tile-label">{callRoster.find(p => p.userId === peerId)?.name || 'Participant'}</span>
+                  </div>
+                ))}
               </div>
               <div className="stage-controls">
                 <button className={`stage-ctrl ${!audioEnabled ? 'off' : ''}`} onClick={toggleAudio} title={audioEnabled ? 'Mute' : 'Unmute'}>
@@ -778,13 +836,23 @@ function StudyRoom() {
               <button className="icon-btn-ghost" onClick={() => setShowAttendance(false)}><Icon name="close" /></button>
             </div>
             <div className="drawer-body">
+              <p className="panel-hint" style={{ marginTop: 0, marginBottom: '0.8rem' }}>
+                "Lamport" is the logical join-order number, not a timestamp. A "Concurrent" badge means two students'
+                joins had no causal path between them — genuinely simultaneous from the system's point of view, not just close in wall-clock time.
+              </p>
               <table className="attendance-table">
-                <thead><tr><th>Student</th><th>Joined</th><th>Left</th><th>Status</th></tr></thead>
+                <thead><tr><th>Student</th><th>Joined</th><th>Lamport</th><th>Left</th><th>Status</th></tr></thead>
                 <tbody>
                   {attendance.map(a => (
                     <tr key={a.userId}>
-                      <td>{a.name}</td>
+                      <td>
+                        {a.name}
+                        {a.concurrentWith?.length > 0 && (
+                          <span className="status-pending" title={`Concurrent with: ${a.concurrentWith.join(', ')}`}> &middot; Concurrent</span>
+                        )}
+                      </td>
                       <td>{a.joinedAt ? new Date(a.joinedAt).toLocaleTimeString() : '--'}</td>
+                      <td>{a.lamportTs ?? '--'}</td>
                       <td>{a.leftAt ? new Date(a.leftAt).toLocaleTimeString() : '--'}</td>
                       <td><span className={`status-dot ${a.status === 'Present' ? 'present' : ''}`} />{a.status}</td>
                     </tr>

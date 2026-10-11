@@ -54,6 +54,8 @@ class SocketManager {
     socket.on('webrtc_offer', (data) => this._relaySignal(socket, 'webrtc_offer', data));
     socket.on('webrtc_answer', (data) => this._relaySignal(socket, 'webrtc_answer', data));
     socket.on('webrtc_ice', (data) => this._relaySignal(socket, 'webrtc_ice', data));
+    socket.on('call_join', (data) => this._onCallJoin(socket, data));
+    socket.on('call_leave', (data) => this._onCallLeave(socket, data));
   }
 
   // --- Classroom channel join: teacher always lands in the classroom room;
@@ -118,7 +120,9 @@ class SocketManager {
 
     const envelope = this.chatService.buildEnvelope(roomId, name, userId, message);
     this.chatService.recordAndBroadcast(envelope);
-    socket.to(`classroom:${roomId}`).emit('chat_message', envelope);
+    // io.to (not socket.to), so the sender's own tab also sees the message
+    // it just sent instead of only finding out once someone else replies.
+    this.io.to(`classroom:${roomId}`).emit('chat_message', envelope);
   }
 
   async _onPrivateMessage(socket, { classroomId, toUserId, text }) {
@@ -168,9 +172,29 @@ class SocketManager {
     }
   }
 
+  // Mesh signaling: targeted at one specific peer (toUserId), not broadcast
+  // to the whole room — same shape as private messaging (_emitToUserLocally
+  // for same-node delivery, a MessageBus broadcast + per-node filtering for
+  // cross-node delivery), not a new pattern.
   _relaySignal(socket, event, data) {
-    socket.to(`classroom:${data.roomId}`).emit(event, data);
-    this.node.messageBus.publish('WEBRTC_SIGNAL', { type: event, ...data });
+    const { userId, name } = socket.user;
+    const payload = { ...data, fromUserId: userId, fromName: name };
+    this._emitToUserLocally(data.toUserId, event, payload);
+    this.node.messageBus.publish('WEBRTC_SIGNAL', { type: event, ...payload });
+  }
+
+  _onCallJoin(socket, { roomId }) {
+    const { userId, name } = socket.user;
+    const payload = { roomId, userId, name };
+    socket.to(`classroom:${roomId}`).emit('call_participant_joined', payload);
+    this.node.messageBus.publish('CALL_PARTICIPANT_JOINED', payload);
+  }
+
+  _onCallLeave(socket, { roomId }) {
+    const { userId, name } = socket.user;
+    const payload = { roomId, userId, name };
+    socket.to(`classroom:${roomId}`).emit('call_participant_left', payload);
+    this.node.messageBus.publish('CALL_PARTICIPANT_LEFT', payload);
   }
 
   _trackUserSocket(userId, socketId) {
@@ -208,15 +232,28 @@ class SocketManager {
     });
 
     bus.subscribe('WEBRTC_SIGNAL', (msg) => {
-      if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit(msg.payload.type, msg.payload);
+      if (msg.senderNode !== this.node.nodeId) this._emitToUserLocally(msg.payload.toUserId, msg.payload.type, msg.payload);
+    });
+
+    bus.subscribe('CALL_PARTICIPANT_JOINED', (msg) => {
+      if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit('call_participant_joined', msg.payload);
+    });
+
+    bus.subscribe('CALL_PARTICIPANT_LEFT', (msg) => {
+      if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit('call_participant_left', msg.payload);
     });
 
     bus.subscribe('RESOURCE_SHARED', (msg) => {
       // Upsert, not push — this event also fires when a PENDING share request
       // is approved, re-broadcasting a resource this node may already have a
-      // stale (pending) copy of.
-      upsertResourceHistory(this.node, msg.payload.roomId, msg.payload);
-      this.io.to(`classroom:${msg.payload.roomId}`).emit('resource_shared', msg.payload);
+      // stale (pending) copy of. Guarded like the others below: resourceService
+      // already does this node's own upsert + emit directly (it has a live
+      // reference to node.socketManager.io), so only react to OTHER nodes'
+      // copies of this event here.
+      if (msg.senderNode !== this.node.nodeId) {
+        upsertResourceHistory(this.node, msg.payload.roomId, msg.payload);
+        this.io.to(`classroom:${msg.payload.roomId}`).emit('resource_shared', msg.payload);
+      }
     });
 
     bus.subscribe('SHARE_REQUESTED', (msg) => {
@@ -228,6 +265,10 @@ class SocketManager {
     });
 
     bus.subscribe('SHARE_REJECTED', (msg) => {
+      // Fires on every node (including whichever one actually holds the
+      // bytes, if different from the one the teacher decided on) so a
+      // rejected upload's memory is freed everywhere, not just locally.
+      this.node.fileStore.delete(msg.payload.resourceId);
       if (msg.senderNode !== this.node.nodeId) this.io.to(`classroom:${msg.payload.roomId}`).emit('share_rejected', msg.payload);
     });
 
@@ -252,7 +293,9 @@ class SocketManager {
     });
 
     bus.subscribe('PRIVATE_MESSAGE', (msg) => {
-      this._emitToUserLocally(msg.payload.toUserId, 'private_message', msg.payload);
+      // _onPrivateMessage already delivers directly to a same-node recipient;
+      // only react here for a message that originated on another node.
+      if (msg.senderNode !== this.node.nodeId) this._emitToUserLocally(msg.payload.toUserId, 'private_message', msg.payload);
     });
 
     bus.subscribe('RAISE_HAND', (msg) => {

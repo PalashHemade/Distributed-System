@@ -60,7 +60,13 @@ const attendanceEventSchema = new mongoose.Schema({
   name: { type: String },
   type: { type: String, enum: ['JOIN', 'LEAVE'], required: true },
   ts: { type: Date, default: Date.now },
-  nodeId: { type: String }
+  nodeId: { type: String },
+  // Logical clocks, stamped by whichever node recorded this event. Lamport
+  // gives a scalar join-order number; vectorClock (plain object, not a
+  // Mongoose Map — see logicalClocks.js / plan doc) is a snapshot used to
+  // detect genuinely concurrent attendance events across nodes.
+  lamportTs: { type: Number },
+  vectorClock: { type: mongoose.Schema.Types.Mixed }
 });
 
 const resourceSchema = new mongoose.Schema({
@@ -72,8 +78,6 @@ const resourceSchema = new mongoose.Schema({
   ownerNodeId: { type: String, required: true },
   roomId: { type: String, required: true },
   uploaderId: { type: String },
-  s3Bucket: { type: String, required: true },
-  s3Key: { type: String, required: true },
   // Teacher uploads are always APPROVED immediately. A student upload (when
   // fileSharingEnabled is on) starts PENDING and is invisible to the rest of
   // the classroom — it becomes a normal shared resource only once the

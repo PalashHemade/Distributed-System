@@ -2,8 +2,7 @@ const dotenv = require('dotenv');
 const path = require('path');
 
 // Load env vars FIRST, before any local module that might read process.env at
-// module-load time (e.g. the S3 client config). server/nodes/ -> server/ ->
-// FA-Project/.env.
+// module-load time. server/nodes/ -> server/ -> FA-Project/.env.
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const express = require('express');
@@ -22,6 +21,9 @@ const { errorHandler } = require('../middleware/errorHandler');
 const Outbox = require('../utils/outbox');
 const makePeerDiscoveryService = require('../services/peerDiscoveryService');
 const makeResourceService = require('../services/resourceService');
+const { LamportClock } = require('../services/logicalClocks');
+const makeLeaderElectionService = require('../services/leaderElectionService');
+const makeClockSyncService = require('../services/clockSyncService');
 
 const classroomRoutes = require('../routes/classroomRoutes');
 const resourceRoutes = require('../routes/resourceRoutes');
@@ -42,7 +44,15 @@ class BaseNode {
     this.port = port;
     this.app = express();
     this.server = http.createServer(this.app);
-    this.gatewayUrl = `http://localhost:${process.env.GATEWAY_PORT || 5000}`;
+    // GATEWAY_URL wins outright when set (the real multi-host case — the
+    // Gateway is a different machine). Otherwise fall back to the
+    // single-machine dev shape (same host, GATEWAY_PORT).
+    this.gatewayUrl = process.env.GATEWAY_URL || `http://localhost:${process.env.GATEWAY_PORT || 5000}`;
+    // What this node tells the Gateway/peers to reach IT at. Defaults to
+    // localhost so local dev (all processes on one machine) is unchanged;
+    // on separate hosts this MUST be set to this instance's real
+    // address (its private IP on AWS, reachable from the Gateway and peers).
+    this.selfHost = process.env.NODE_HOST || 'localhost';
 
     this.outbox = new Outbox(this.nodeId);
 
@@ -53,6 +63,24 @@ class BaseNode {
     this.resources = 0;
     this.chatHistory = new Map(); // roomId -> Array of messages
     this.resourceHistory = new Map(); // roomId -> Array of resources
+    // resourceId -> { buffer, mimeType, originalName }. Files are session-only —
+    // never downloaded again after a classroom ends — so bytes live purely in
+    // this process's memory on whichever node received the upload, not on disk
+    // or in any cloud store. A different node serving a download request for
+    // this file fetches it over RPC (see resourceService.resolveDownload).
+    this.fileStore = new Map();
+
+    // Logical clocks — neither is persisted or gossip-synced; a restart
+    // resets this node's own components to zero while peers keep climbing.
+    // That's an accepted limitation (components only need to be monotonic
+    // within one process's lifetime for correctness), not a bug.
+    this.lamportClock = new LamportClock();
+    this.vectorClock = {}; // nodeId -> count, grows lazily as peers are seen
+
+    // Cristian's-algorithm physical clock offset estimate — display only,
+    // never adjusts the real system clock. Unrelated to the logical clocks
+    // above; kept as a separate field so the two are never confused.
+    this.clockOffsetMs = 0;
 
     // Distributed-communication primitives.
     this.rpcServer = new RpcServer(this);
@@ -62,6 +90,8 @@ class BaseNode {
     this.socketManager = new SocketManager(this);
 
     this.peerDiscovery = makePeerDiscoveryService(this);
+    this.leaderElection = makeLeaderElectionService(this);
+    this.clockSync = makeClockSyncService(this);
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -88,13 +118,24 @@ class BaseNode {
     this.app.use(errorHandler);
   }
 
-  // RPC methods resolve via Mongo + S3 now (resourceService), not local disk
-  // — see services/resourceService.js and docs/distributed-concepts.md for
-  // why RPC is kept even though a local Mongo query alone would also work.
+  // findResource/getResource are the actual cross-node file transfer: a
+  // file's bytes only ever live in the uploading node's process memory
+  // (node.fileStore), so another node fetches them over RPC rather than
+  // through any shared storage — see services/resourceService.js.
   registerRpcMethods() {
     const resourceService = makeResourceService(this);
     this.rpcServer.registerMethod('findResource', (params) => resourceService.rpcFindResource(params));
     this.rpcServer.registerMethod('getResource', (params) => resourceService.rpcGetResource(params));
+
+    // A synchronous RPC round-trip is exactly the failure-detection primitive
+    // Bully leader election needs — reusing RpcClient's existing circuit
+    // breaker instead of building a second, separate heartbeat mechanism.
+    // This `ping` doubles as the project's beacon/heartbeat protocol item.
+    this.rpcServer.registerMethod('ping', () => ({ ok: true, nodeId: this.nodeId }));
+    this.rpcServer.registerMethod('electionPing', () => this.leaderElection.onElectionPing());
+
+    this.rpcServer.registerMethod('acquireLock', (params) => this.leaderElection.acquireLock(params.resourceKey));
+    this.rpcServer.registerMethod('releaseLock', (params) => this.leaderElection.releaseLock(params.resourceKey));
   }
 
   async start() {
@@ -103,6 +144,8 @@ class BaseNode {
     this.server.listen(this.port, () => {
       console.log(`[${this.nodeId}] Node server running on port ${this.port}`);
       this.peerDiscovery.start();
+      this.leaderElection.start();
+      this.clockSync.start();
     });
   }
 }

@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { Classroom, ClassroomMember, AttendanceEvent } = require('../models');
 const { HttpError } = require('../middleware/errorHandler');
 const membershipCache = require('./membershipCache');
+const { vcCompare } = require('./logicalClocks');
 
 const SETTINGS_KEYS = ['groupChatEnabled', 'personalMessagingEnabled', 'fileSharingEnabled'];
 
@@ -111,12 +112,29 @@ module.exports = function classroomService(node) {
     const events = await AttendanceEvent.find({ classroomId }).sort({ ts: 1 }).lean();
     const byUser = new Map();
     for (const ev of events) {
-      if (!byUser.has(ev.userId)) byUser.set(ev.userId, { userId: ev.userId, name: ev.name, joinedAt: null, leftAt: null, status: 'Left' });
+      if (!byUser.has(ev.userId)) byUser.set(ev.userId, { userId: ev.userId, name: ev.name, joinedAt: null, leftAt: null, status: 'Left', lamportTs: null, vectorClock: null });
       const entry = byUser.get(ev.userId);
-      if (ev.type === 'JOIN') { entry.joinedAt = ev.ts; entry.leftAt = null; entry.status = 'Present'; }
+      if (ev.type === 'JOIN') { entry.joinedAt = ev.ts; entry.leftAt = null; entry.status = 'Present'; entry.lamportTs = ev.lamportTs; entry.vectorClock = ev.vectorClock; }
       if (ev.type === 'LEAVE') { entry.leftAt = ev.ts; entry.status = 'Left'; }
     }
-    return Array.from(byUser.values());
+
+    const rows = Array.from(byUser.values());
+
+    // Pairwise compare each user's latest-JOIN vector clock — rosters are
+    // small, O(n^2) is fine. Flags genuinely concurrent joins (no causal
+    // path between them), not just "happened at a similar wall-clock time".
+    for (const row of rows) row.concurrentWith = [];
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) {
+        if (!rows[i].vectorClock || !rows[j].vectorClock) continue;
+        if (vcCompare(rows[i].vectorClock, rows[j].vectorClock) === 'CONCURRENT') {
+          rows[i].concurrentWith.push(rows[j].userId);
+          rows[j].concurrentWith.push(rows[i].userId);
+        }
+      }
+    }
+
+    return rows;
   }
 
   return {

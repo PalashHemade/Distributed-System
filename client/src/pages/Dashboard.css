@@ -2,12 +2,58 @@
   padding: 2rem;
   background: #1a1a1a;
   min-height: 100vh;
+  /* This page is intentionally dark-themed, independent of the light
+     marketing-page theme elsewhere in the app — without this, every cell
+     here inherits that theme's near-black --ink body color, which is
+     nearly invisible against these dark panels (only the RPC/MESSAGE/etc.
+     type badges were visible, since those set their own explicit color). */
+  color: #e4e4e4;
 }
+
+.node-card strong.online { color: #4caf50; }
+.node-card strong.offline { color: #f44336; }
 
 .dashboard-container h1, .dashboard-container h2 {
   color: #fff;
   border-bottom: 1px solid #333;
   padding-bottom: 0.5rem;
+}
+
+.global-state-section {
+  margin-bottom: 2rem;
+}
+
+.global-state-grid {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+  background: #252525;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+}
+
+.global-state-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.gs-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+}
+
+.gs-value {
+  font-weight: 600;
+  color: #ffcd3c;
+}
+
+.leader-crown {
+  color: #ffcd3c;
+  font-size: 0.9rem;
 }
 
 .nodes-grid {

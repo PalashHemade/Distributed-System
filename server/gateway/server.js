@@ -37,6 +37,7 @@ const io = require('socket.io')(server, {
 
 const registryService = makeRegistryService(() => {
   io.emit('node_status', registryService.getAll());
+  io.emit('global_state', registryService.getGlobalState());
 });
 const monitorService = makeMonitorService((event) => {
   io.emit('network_event', event);

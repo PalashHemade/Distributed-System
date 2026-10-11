@@ -260,14 +260,44 @@
 .stage-video {
   position: relative;
   width: 100%;
+  min-height: 360px;
 }
 
-.stage-remote {
+/* Full-mesh video grid — one tile per call participant (local + remote),
+   replacing the old single-remote + picture-in-picture layout that only
+   ever supported exactly 2 people. */
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  padding: 1rem;
+  min-height: 360px;
+}
+
+.video-tile {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0c0c0c;
+  aspect-ratio: 4 / 3;
+}
+
+.tile-video {
   width: 100%;
   height: 100%;
-  min-height: 360px;
   object-fit: cover;
-  background: #0c0c0c;
+  display: block;
+}
+
+.tile-label {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
 }
 
 .stage-badge {
@@ -291,38 +321,6 @@
   height: 7px;
   border-radius: 50%;
   background: #e74c3c;
-}
-
-.stage-pip {
-  position: absolute;
-  bottom: 5.5rem;
-  left: 1.5rem;
-  width: 150px;
-  aspect-ratio: 4 / 3;
-  border-radius: 14px;
-  overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  background: #1a1a1a;
-}
-
-.stage-local {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.pip-muted {
-  position: absolute;
-  bottom: 0.4rem;
-  right: 0.4rem;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .stage-controls {

@@ -8,6 +8,7 @@ module.exports = function registryRoutes(registryService) {
   router.get('/health', ctrl.health);
   router.post('/api/registry/register', ctrl.register);
   router.post('/api/registry/heartbeat', ctrl.heartbeat);
+  router.get('/api/global-state', ctrl.globalState);
 
   return router;
 };
